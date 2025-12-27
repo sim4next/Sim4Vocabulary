@@ -1,0 +1,8 @@
+{
+  "name": "Sim4Vocab AI",
+  "description": "An intelligent English vocabulary learning app that extracts words from photos, provides definitions, and creates personalized study sessions and quizzes.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
