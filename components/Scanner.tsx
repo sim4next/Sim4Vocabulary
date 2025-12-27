@@ -16,6 +16,7 @@ const Scanner: React.FC<ScannerProps> = ({ onProcessed }) => {
   const [extractedWords, setExtractedWords] = useState<VocabularyWord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -29,18 +30,28 @@ const Scanner: React.FC<ScannerProps> = ({ onProcessed }) => {
     }
   };
 
+  const handleCancelRecognition = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsProcessing(false);
+  };
+
   const processInput = async () => {
     setIsProcessing(true);
     setError(null);
+    abortControllerRef.current = new AbortController();
+
     try {
       let words: VocabularyWord[] = [];
       if (mode === 'scan') {
         if (!image) return;
-        words = await extractWordsFromImage(image);
+        words = await extractWordsFromImage(image, abortControllerRef.current.signal);
       } else {
         const wordList = manualText.split('\n').map(w => w.trim()).filter(w => w.length > 0);
         if (wordList.length === 0) throw new Error("Please enter at least one word.");
-        words = await fetchWordDetails(wordList);
+        words = await fetchWordDetails(wordList, abortControllerRef.current.signal);
       }
       
       if (words.length === 0) {
@@ -49,10 +60,15 @@ const Scanner: React.FC<ScannerProps> = ({ onProcessed }) => {
 
       setExtractedWords(words);
     } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Something went wrong while processing.");
+      if (err.name === 'AbortError') {
+        console.log("Process cancelled by user.");
+      } else {
+        console.error(err);
+        setError(err.message || "Something went wrong while processing.");
+      }
     } finally {
       setIsProcessing(false);
+      abortControllerRef.current = null;
     }
   };
 
@@ -233,15 +249,26 @@ const Scanner: React.FC<ScannerProps> = ({ onProcessed }) => {
         )}
 
         {isProcessing && (
-          <div className="absolute inset-0 bg-white/90 backdrop-blur-sm flex flex-col items-center justify-center z-20">
-            <div className="relative">
-               <Loader2 className="w-16 h-16 text-indigo-600 animate-spin" />
-               <Sparkles className="absolute -top-1 -right-1 w-6 h-6 text-amber-400 animate-bounce" />
+          <div className="absolute inset-0 bg-white/95 backdrop-blur-md flex flex-col items-center justify-center z-20 animate-in fade-in duration-300">
+            <div className="relative mb-6">
+               <Loader2 className="w-20 h-20 text-indigo-600 animate-spin" />
+               <Sparkles className="absolute -top-1 -right-1 w-8 h-8 text-amber-400 animate-bounce" />
             </div>
-            <p className="mt-4 font-bold text-slate-900 text-center px-6">
-              Gemini AI is generating definitions...
-            </p>
-            <p className="text-sm text-slate-500">Extracting IPA, Word Type, and Meanings.</p>
+            <div className="text-center px-8 space-y-2 mb-8">
+              <p className="font-black text-2xl text-slate-900 tracking-tight">
+                Gemini AI is analyzing...
+              </p>
+              <p className="text-slate-500 font-medium max-w-xs mx-auto">
+                Extracting meanings, IPA, and word types for your new batch.
+              </p>
+            </div>
+            
+            <button 
+              onClick={handleCancelRecognition}
+              className="px-6 py-2.5 bg-slate-100 text-slate-500 hover:bg-red-50 hover:text-red-600 rounded-full text-sm font-bold transition-all border border-slate-200"
+            >
+              Cancel Recognition
+            </button>
           </div>
         )}
       </div>

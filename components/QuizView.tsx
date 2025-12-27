@@ -14,23 +14,20 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
   const [remainingWords, setRemainingWords] = useState<VocabularyWord[]>([]);
   const [currentWord, setCurrentWord] = useState<VocabularyWord | null>(null);
   
-  // Input & Feedback
   const [userInput, setUserInput] = useState('');
   const [feedback, setFeedback] = useState<'correct' | 'incorrect' | null>(null);
   const [finished, setFinished] = useState(false);
   
-  // Audio State
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   
-  // Refs for MediaRecorder
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const isHoldingRef = useRef(false);
   const stopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // 1. Init Session
   useEffect(() => {
     const toStudy = session.words.filter(w => w.status !== WordStatus.MASTERED);
     if (toStudy.length === 0) {
@@ -42,7 +39,6 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
     }
   }, [session]);
 
-  // 2. Init Microphone
   useEffect(() => {
     async function initMic() {
       try {
@@ -61,21 +57,28 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
       if (stopTimeoutRef.current) {
         clearTimeout(stopTimeoutRef.current);
       }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, []);
 
-  // --- Audio Handlers ---
+  const handleCancelTranscription = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsProcessing(false);
+  };
 
   const startRecording = async () => {
-    if (!streamRef.current || isProcessing) return;
+    if (!streamRef.current || isProcessing || !currentWord) return;
     
-    // Clear any pending stop timeout if user presses again quickly
     if (stopTimeoutRef.current) {
         clearTimeout(stopTimeoutRef.current);
         stopTimeoutRef.current = null;
     }
 
-    // Ensure stream is active
     if (!streamRef.current.active) {
        try {
         streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -89,7 +92,6 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
     const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
     
     try {
-      // Use existing recorder if state is inactive, or create new
       let recorder = mediaRecorderRef.current;
       if (!recorder || recorder.state === 'inactive') {
          recorder = new MediaRecorder(streamRef.current, { mimeType });
@@ -107,35 +109,44 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
 
             setIsProcessing(true);
             setIsRecording(false);
+            abortControllerRef.current = new AbortController();
             
             try {
               const blob = new Blob(chunksRef.current, { type: mimeType });
               
-              // Convert to Base64
               const reader = new FileReader();
               reader.onloadend = async () => {
                 const base64String = (reader.result as string).split(',')[1];
-                if (base64String) {
-                  const transcribedText = await transcribeSpelling(base64String, mimeType);
+                if (base64String && abortControllerRef.current && currentWord) {
+                  // 传递目标单词作为上下文
+                  const transcribedText = await transcribeSpelling(
+                    base64String, 
+                    mimeType, 
+                    currentWord.term,
+                    abortControllerRef.current.signal
+                  );
                   if (transcribedText) {
-                    // Remove spaces and special chars to just get letters
                     const cleanLetters = transcribedText.replace(/[^a-zA-Z]/g, '').toUpperCase();
                     setUserInput(prev => prev + cleanLetters);
                   }
                 }
                 setIsProcessing(false);
+                abortControllerRef.current = null;
               };
               reader.readAsDataURL(blob);
               
-            } catch (error) {
-              console.error("Processing error", error);
+            } catch (error: any) {
+              if (error.name !== 'AbortError') {
+                console.error("Processing error", error);
+              }
               setIsProcessing(false);
+              abortControllerRef.current = null;
             }
           };
       }
 
       if (recorder.state === 'inactive') {
-          recorder.start(100); // Slice every 100ms to ensure data is available
+          recorder.start(100); 
           setIsRecording(true);
       }
     } catch (err) {
@@ -144,12 +155,11 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
   };
 
   const stopRecording = () => {
-    // Add a 600ms delay to capture the "tail" of the speech.
     stopTimeoutRef.current = setTimeout(() => {
         if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
             mediaRecorderRef.current.stop();
         }
-    }, 600);
+    }, 400); // 略微减短停止延迟
   };
 
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -175,8 +185,6 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch (e) {}
   };
-
-  // --- Logic ---
 
   const handleClear = () => {
     setUserInput('');
@@ -240,7 +248,6 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
   return (
     <div className="max-w-xl mx-auto space-y-8 py-6 relative select-none">
       
-      {/* Progress */}
       <div className="flex items-center justify-between">
         <h2 className="font-bold text-slate-400 uppercase tracking-widest text-[10px]">Spelling Quiz</h2>
         <span className="text-sm font-bold text-indigo-600">Left: {remainingWords.length}</span>
@@ -252,7 +259,6 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
         />
       </div>
 
-      {/* Main Card */}
       <div className="bg-white p-8 rounded-[48px] border border-slate-200 shadow-xl shadow-slate-200/40 min-h-[500px] flex flex-col justify-center animate-in slide-in-from-bottom-8 relative">
         <div className="text-center space-y-8">
           
@@ -272,7 +278,7 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
                 type="text"
                 value={userInput}
                 onChange={(e) => setUserInput(e.target.value)}
-                placeholder={isRecording ? "Listening..." : isProcessing ? "Processing..." : "Hold mic to spell"}
+                placeholder={isRecording ? "Listening..." : isProcessing ? "AI Analyzing..." : "Hold mic to spell"}
                 disabled={!!feedback || isRecording || isProcessing}
                 className={`w-full p-8 pr-44 rounded-[32px] border-4 text-center text-4xl font-black outline-none transition-all tracking-[0.3em] uppercase ${
                   feedback === 'correct' 
@@ -288,13 +294,11 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
               />
 
               <div className="absolute right-4 top-1/2 -translate-y-1/2 z-20 flex items-center gap-3">
-                {/* Clear button next to Recording button */}
                 {!feedback && userInput && !isRecording && !isProcessing && (
                   <button
                     type="button"
                     onClick={handleClear}
                     className="h-12 w-12 flex items-center justify-center rounded-2xl bg-slate-100 text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition-all active:scale-90"
-                    title="Clear input"
                   >
                     <Trash2 className="w-5 h-5" />
                   </button>
@@ -333,11 +337,20 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
               </div>
             </div>
 
-            <div className="h-6 flex justify-center items-center">
+            <div className="h-6 flex justify-center items-center gap-3">
                {isProcessing ? (
-                 <p className="text-xs font-bold text-indigo-500 animate-pulse flex items-center gap-1">
-                   <CloudCog className="w-3 h-3" /> AI Analyzing Audio...
-                 </p>
+                 <>
+                   <p className="text-xs font-bold text-indigo-500 animate-pulse flex items-center gap-1">
+                     <CloudCog className="w-3 h-3" /> Native AI Recognition...
+                   </p>
+                   <button 
+                    type="button"
+                    onClick={handleCancelTranscription}
+                    className="text-[10px] text-slate-400 hover:text-red-500 font-bold uppercase underline"
+                   >
+                     Cancel
+                   </button>
+                 </>
                ) : null}
             </div>
 
@@ -377,7 +390,7 @@ const QuizView: React.FC<QuizViewProps> = ({ session, onComplete, onAnswer }) =>
              {!isRecording && !isProcessing && !feedback && (
                <div className="flex items-center gap-2 text-[11px] text-slate-400 font-bold uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-full border border-slate-200/50">
                  <Zap className="w-3 h-3 text-amber-500" />
-                 Hold to Record &bull; Release to Transcribe
+                 Native Audio Optimized &bull; High Accuracy
                </div>
              )}
           </div>

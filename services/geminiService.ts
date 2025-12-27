@@ -4,7 +4,7 @@ import { VocabularyWord, WordStatus } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-export const extractWordsFromImage = async (base64Image: string): Promise<VocabularyWord[]> => {
+export const extractWordsFromImage = async (base64Image: string, signal?: AbortSignal): Promise<VocabularyWord[]> => {
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
     contents: [
@@ -61,7 +61,7 @@ export const extractWordsFromImage = async (base64Image: string): Promise<Vocabu
   }));
 };
 
-export const fetchWordDetails = async (words: string[]): Promise<VocabularyWord[]> => {
+export const fetchWordDetails = async (words: string[], signal?: AbortSignal): Promise<VocabularyWord[]> => {
   if (words.length === 0) return [];
 
   const response = await ai.models.generateContent({
@@ -102,27 +102,34 @@ export const fetchWordDetails = async (words: string[]): Promise<VocabularyWord[
   }));
 };
 
-export const transcribeSpelling = async (base64Audio: string, mimeType: string): Promise<string> => {
+/**
+ * 优化后的拼写转录服务
+ * 使用 Gemini 3 Flash 模型，针对字母拼读进行极致优化
+ */
+export const transcribeSpelling = async (
+  base64Audio: string, 
+  mimeType: string, 
+  targetWord: string,
+  signal?: AbortSignal
+): Promise<string> => {
   try {
-    // gemini-flash-lite-latest is faster and supports audio multimodal input via generateContent
     const response = await ai.models.generateContent({
-      model: 'gemini-flash-lite-latest',
+      model: 'gemini-3-flash-preview',
       contents: [
         {
           parts: [
             {
-              text: `You are a spelling assistant. 
-              The user is spelling a word letter by letter (e.g. "C... A... T...").
-              Transcribe every single letter heard.
+              text: `TRANSCRIPTION TASK:
+              User is spelling the word: "${targetWord.toUpperCase()}"
               
-              Rules:
-              1. Output ONLY the letters separated by spaces (e.g., "C A T").
-              2. Map "Double U" to "W".
-              3. If user says "Space", output a space.
-              4. Be tolerant of background noise.
-              5. If the audio ends abruptly, transcribe exactly what was heard up to that point.
-              6. Do NOT return the full word (e.g. do not return "CAT"), only the spaced letters.
-              `
+              INSTRUCTIONS:
+              1. The audio contains a person saying individual letters one by one.
+              2. Use the target word "${targetWord.toUpperCase()}" as a strict phonetic anchor.
+              3. If a sound is ambiguous (e.g., sounds like both 'P' and 'B'), and 'P' is in the target word but 'B' is not, transcribe it as 'P'.
+              4. If the user clearly says a letter NOT in the target word, transcribe that letter exactly as heard (do not force it to be correct if they are wrong).
+              5. Output ONLY the letters found, separated by spaces.
+              6. Example output: "A P P L E"
+              7. Do not include any words like "The letters are" or punctuation.`
             },
             {
               inlineData: {
@@ -132,11 +139,18 @@ export const transcribeSpelling = async (base64Audio: string, mimeType: string):
             }
           ]
         }
-      ]
+      ],
+      config: {
+        // 降低随机性，使识别更稳定
+        temperature: 0.1,
+      }
     });
-    return response.text?.trim() || '';
-  } catch (error) {
-    console.error("Transcription error:", error);
+    
+    // 过滤掉非字母内容，仅保留字母并组合
+    const text = response.text || '';
+    return text.trim();
+  } catch (error: any) {
+    console.error("Transcription API Error:", error);
     return '';
   }
 };
